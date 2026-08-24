@@ -1,0 +1,140 @@
+openapi: 3.0.3
+info:
+  title: Sales Ops Demo API (MOCK)
+  version: "1.0.0"
+  description: >
+    A demonstration server with synthetic data. Not connected to any production system.
+    Every project, artifact and URL is invented.
+servers:
+  - url: http://localhost:8787
+security:
+  - bearerAuth: []
+paths:
+  /v1/health:
+    get:
+      summary: Liveness
+      security: []
+      responses:
+        "200": { description: OK }
+  /v1/projects:
+    get:
+      summary: List projects
+      responses:
+        "200": { description: OK }
+    post:
+      summary: Create a project from a brief
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                summary: { type: string }
+                owner: { type: string }
+      responses:
+        "201": { description: Created }
+        "400": { description: Missing required field }
+  /v1/projects/{id}:
+    get:
+      summary: Current state of a project
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Project" }
+        "404": { description: Not found }
+  /v1/projects/{id}/run:
+    post:
+      summary: Start a generation run (asynchronous)
+      description: Returns 202 with a job to poll. Never returns the document itself.
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action:
+                  type: string
+                  enum: [extract, draft_sow, revise, draft_proposal]
+      responses:
+        "202": { description: Run accepted, poll the job }
+        "400": { description: Unknown action }
+        "404": { description: Not found }
+        "409": { description: A run is already in flight for this project }
+  /v1/jobs/{id}:
+    get:
+      summary: Poll a run
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { description: running | succeeded }
+        "404": { description: Not found }
+  /v1/projects/{id}/feedback:
+    post:
+      summary: Append feedback and have it classified
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [note]
+              properties:
+                note: { type: string }
+                source: { type: string, enum: [client, internal] }
+      responses:
+        "201": { description: Recorded, with classification and whether regeneration is needed }
+        "400": { description: Missing required field }
+        "404": { description: Not found }
+  /v1/projects/{id}/approve:
+    post:
+      summary: Request approval. Always refuses.
+      description: >
+        Returns 403 requires_human_approval in every case. Pricing, payment terms and client
+        send are decided by a named human out of band. No credential grants this.
+        Render the refusal as a state, never as a retryable error.
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "403": { description: requires_human_approval, expected }
+        "404": { description: Not found }
+  /v1/projects/{id}/send:
+    post:
+      summary: Not implemented, by design. Always refuses.
+      description: Nothing reaches a client from an automated caller.
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "405": { description: not_implemented_by_design, expected }
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer }
+  schemas:
+    Project:
+      type: object
+      properties:
+        project_id: { type: string }
+        name: { type: string }
+        status:
+          type: string
+          enum: [intake, clarifications_needed, draft_ready, ready_for_approval]
+        owner: { type: string }
+        summary: { type: string }
+        open_questions: { type: array, items: { type: string } }
+        decided: { type: array, items: { type: string } }
+        artifacts:
+          type: array
+          items:
+            type: object
+            properties:
+              type: { type: string }
+              version: { type: integer }
+              status: { type: string }
+              url: { type: string }
+        next_action: { type: string }
