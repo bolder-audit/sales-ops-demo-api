@@ -1,10 +1,14 @@
 {
   "name": "sales-ops-demo-api",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "Mock API for a sales-document workflow. Synthetic data, no production connection.",
   "main": "server.js",
-  "scripts": { "start": "node server.js" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test.js",
+    "example": "node example.js"
+  },
   "engines": { "node": ">=18" },
   "license": "MIT"
 }
