@@ -1,10 +1,15 @@
 openapi: 3.0.3
 info:
   title: Sales Ops Demo API (MOCK)
-  version: "1.0.0"
+  version: "1.1.0"
   description: >
     A demonstration server with synthetic data. Not connected to any production system.
     Every project, artifact and URL is invented.
+
+
+    Source documents go in, generated documents come out. What a run produces is derived
+    from the documents attached to the project, so a project with no source material
+    produces a shell and says so.
 servers:
   - url: http://localhost:8787
 security:
@@ -22,7 +27,10 @@ paths:
       responses:
         "200": { description: OK }
     post:
-      summary: Create a project from a brief
+      summary: Create a project, optionally with an inline brief
+      description: >
+        A brief supplied here becomes the project's first source document. For anything
+        longer than a paragraph, create the project and post to /documents instead.
       requestBody:
         required: true
         content:
@@ -34,6 +42,9 @@ paths:
                 name: { type: string }
                 summary: { type: string }
                 owner: { type: string }
+                brief:
+                  type: string
+                  description: Inline source text. Becomes source document brief.txt.
       responses:
         "201": { description: Created }
         "400": { description: Missing required field }
@@ -48,10 +59,49 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Project" }
         "404": { description: Not found }
+  /v1/projects/{id}/documents:
+    post:
+      summary: Attach a source document to a project
+      description: >
+        Appends rather than replacing, because real intake is several documents: a call
+        transcript, a written brief, a requirements list. Everything a run produces is
+        derived from these. Capped at 400,000 characters per document.
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string, description: The document body, as plain text or markdown. }
+                filename: { type: string }
+                kind:
+                  type: string
+                  enum: [transcript, brief, requirements, notes, other]
+      responses:
+        "201":
+          description: Stored
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  project_id: { type: string }
+                  document: { $ref: "#/components/schemas/Document" }
+                  documents_on_project: { type: integer }
+                  next_action: { type: string }
+        "400": { description: Missing required field }
+        "404": { description: Not found }
+        "413": { description: Document exceeds the size cap }
   /v1/projects/{id}/run:
     post:
       summary: Start a generation run (asynchronous)
-      description: Returns 202 with a job to poll. Never returns the document itself.
+      description: >
+        Returns 202 with a job to poll. Never returns the document itself. If the project
+        has no source documents the response carries a warning and the run will produce a
+        shell rather than a real document.
       parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
       requestBody:
         required: true
@@ -65,16 +115,71 @@ paths:
                   type: string
                   enum: [extract, draft_sow, revise, draft_proposal]
       responses:
-        "202": { description: Run accepted, poll the job }
+        "202":
+          description: Run accepted, poll the job
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job_id: { type: string }
+                  project_id: { type: string }
+                  action: { type: string }
+                  state: { type: string }
+                  estimated_seconds: { type: integer }
+                  source_documents: { type: integer }
+                  poll: { type: string }
+                  note: { type: string }
+                  warning:
+                    type: string
+                    description: Present only when the project has no source material.
         "400": { description: Unknown action }
         "404": { description: Not found }
         "409": { description: A run is already in flight for this project }
   /v1/jobs/{id}:
     get:
       summary: Poll a run
+      description: >
+        While running, state is "running". On completion, state is "succeeded", result
+        carries the updated project, and artifact carries a pointer to the generated
+        document when the action produced one.
       parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
       responses:
-        "200": { description: running | succeeded }
+        "200":
+          description: running or succeeded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job_id: { type: string }
+                  project_id: { type: string }
+                  action: { type: string }
+                  state: { type: string, enum: [running, succeeded] }
+                  started_at: { type: string }
+                  finished_at: { type: string, nullable: true }
+                  estimated_seconds: { type: integer }
+                  artifact:
+                    allOf: [{ $ref: "#/components/schemas/ArtifactPointer" }]
+                    nullable: true
+                  result:
+                    allOf: [{ $ref: "#/components/schemas/Project" }]
+                    nullable: true
+        "404": { description: Not found }
+  /v1/artifacts/{id}:
+    get:
+      summary: Fetch a generated document body
+      description: >
+        A run returns a pointer, never the text inline. Fetch the body here. Documents run
+        to a couple of thousand words, which is deliberate: an integration has to decide how
+        to present something that does not fit in a chat message.
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Artifact" }
         "404": { description: Not found }
   /v1/projects/{id}/feedback:
     post:
@@ -116,6 +221,65 @@ components:
   securitySchemes:
     bearerAuth: { type: http, scheme: bearer }
   schemas:
+    Document:
+      type: object
+      description: Metadata for an attached source document. The text is not echoed back.
+      properties:
+        document_id: { type: string }
+        filename: { type: string }
+        kind: { type: string }
+        words: { type: integer }
+        chars: { type: integer }
+        received_at: { type: string }
+    ArtifactPointer:
+      type: object
+      properties:
+        artifact_id: { type: string }
+        type: { type: string, enum: [sow, proposal, estimate] }
+        version: { type: integer }
+        status: { type: string }
+        words: { type: integer }
+        url: { type: string, description: Synthetic, non-resolving. }
+        content: { type: string, description: Path to fetch the body, /v1/artifacts/{id}. }
+    Artifact:
+      allOf:
+        - $ref: "#/components/schemas/ArtifactPointer"
+        - type: object
+          properties:
+            project_id: { type: string }
+            created_at: { type: string }
+            markdown: { type: string, description: The document body. }
+    Extraction:
+      type: object
+      description: What the last extract run read out of the attached documents.
+      properties:
+        source_words: { type: integer }
+        source_documents: { type: array, items: { type: string } }
+        themes:
+          type: array
+          items:
+            type: object
+            properties:
+              key: { type: string }
+              title: { type: string }
+        questions:
+          type: array
+          items:
+            type: object
+            properties:
+              text: { type: string }
+              theme: { type: string }
+              evidence:
+                type: string
+                nullable: true
+                description: The sentence in the source that produced this question.
+        decided:
+          type: array
+          items:
+            type: object
+            properties:
+              text: { type: string }
+              evidence: { type: string }
     Project:
       type: object
       properties:
@@ -126,15 +290,13 @@ components:
           enum: [intake, clarifications_needed, draft_ready, ready_for_approval]
         owner: { type: string }
         summary: { type: string }
+        documents: { type: array, items: { $ref: "#/components/schemas/Document" } }
         open_questions: { type: array, items: { type: string } }
         decided: { type: array, items: { type: string } }
-        artifacts:
-          type: array
-          items:
-            type: object
-            properties:
-              type: { type: string }
-              version: { type: integer }
-              status: { type: string }
-              url: { type: string }
+        extraction:
+          allOf: [{ $ref: "#/components/schemas/Extraction" }]
+          nullable: true
+        artifacts: { type: array, items: { $ref: "#/components/schemas/ArtifactPointer" } }
         next_action: { type: string }
+        created_at: { type: string }
+        updated_at: { type: string }
